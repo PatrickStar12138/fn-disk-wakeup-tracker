@@ -1,0 +1,16 @@
+appname=fn-disk-wakeup-tracker
+version=@VERSION@
+display_name=硬盘唤醒追踪器
+desc=低干扰记录机械硬盘状态变化，并以证据和可信度展示疑似唤醒来源。
+source=thirdparty
+platform=@PLATFORM@
+maintainer=PatrickStar12138
+maintainer_url=https://github.com/PatrickStar12138/fn-disk-wakeup-tracker
+os_min_version=1.1.3100
+desktop_uidir=ui
+desktop_applaunchname=fn-disk-wakeup-tracker.main
+ctl_stop=true
+checkport=false
+disable_authorization_path=true
+changelog=0.1.0 首次发布：状态采集、事件、疑似来源、诊断和管理控制台。
+

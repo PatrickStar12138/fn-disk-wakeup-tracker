@@ -1,0 +1,18 @@
+{
+  ".url": {
+    "fn-disk-wakeup-tracker.main": {
+      "title": "硬盘唤醒追踪器",
+      "icon": "images/icon_{0}.png",
+      "type": "iframe",
+      "protocol": "",
+      "gatewayPrefix": "/app/fn-disk-wakeup-tracker",
+      "gatewaySocket": "app.sock",
+      "url": "/app/fn-disk-wakeup-tracker",
+      "allUsers": false,
+      "control": {
+        "accessPerm": "readonly"
+      }
+    }
+  }
+}
+

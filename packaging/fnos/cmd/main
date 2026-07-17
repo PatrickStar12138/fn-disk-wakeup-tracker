@@ -1,0 +1,143 @@
+#!/bin/bash
+set -u
+
+APP_BIN_DIR="${TRIM_APPDEST}/bin"
+RUN_DIR="${TRIM_PKGVAR}/run"
+LOG_DIR="${TRIM_PKGVAR}/logs"
+SERVER_BIN="${APP_BIN_DIR}/fn-disk-wakeup-server"
+COLLECTOR_BIN="${APP_BIN_DIR}/fn-disk-wakeup-collector"
+SERVER_PID_FILE="${RUN_DIR}/server.pid"
+COLLECTOR_PID_FILE="${RUN_DIR}/collector.pid"
+SERVER_LOG="${LOG_DIR}/server.log"
+COLLECTOR_LOG="${LOG_DIR}/collector.log"
+GATEWAY_SOCKET="${TRIM_APPDEST}/app.sock"
+COLLECTOR_SOCKET="${RUN_DIR}/collector.sock"
+
+# fail 将生命周期错误同时写入官方用户可见日志并退出。
+fail() {
+  local message="$1"
+  if [ -n "${TRIM_TEMP_LOGFILE:-}" ]; then
+    echo "$message" > "${TRIM_TEMP_LOGFILE}"
+  fi
+  echo "$message" >&2
+  exit 1
+}
+
+# prepare_dirs 创建最小权限目录，并仅给包用户写网关 Socket 所需目录权限。
+prepare_dirs() {
+  mkdir -p "$RUN_DIR" "$LOG_DIR" "$TRIM_PKGETC" "$TRIM_PKGVAR" "$TRIM_PKGTMP" "$TRIM_PKGHOME" || return 1
+  chown "$TRIM_USERNAME:$TRIM_GROUPNAME" "$RUN_DIR" "$LOG_DIR" "$TRIM_PKGETC" "$TRIM_PKGVAR" "$TRIM_PKGTMP" "$TRIM_PKGHOME" || return 1
+  chmod 0750 "$RUN_DIR" "$LOG_DIR" "$TRIM_PKGETC" "$TRIM_PKGVAR" "$TRIM_PKGTMP" "$TRIM_PKGHOME" || return 1
+  chgrp "$TRIM_GROUPNAME" "$TRIM_APPDEST" || return 1
+  chmod g+w "$TRIM_APPDEST" || return 1
+}
+
+# read_pid 只接受纯数字 PID，拒绝损坏或注入内容。
+read_pid() {
+  local file="$1"
+  if [ ! -f "$file" ]; then return 1; fi
+  local pid
+  pid="$(sed -n '1p' "$file" | tr -d '[:space:]')"
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  echo "$pid"
+}
+
+# is_expected_process 对照 /proc 可执行文件路径，避免终止无关进程。
+is_expected_process() {
+  local pid="$1"
+  local expected="$2"
+  if ! kill -0 "$pid" 2>/dev/null; then return 1; fi
+  if [ ! -e "/proc/$pid/exe" ]; then return 1; fi
+  local actual
+  actual="$(readlink -f "/proc/$pid/exe" 2>/dev/null || true)"
+  [ "$actual" = "$expected" ]
+}
+
+# status_one 校验 PID 文件和实际进程身份是否同时有效。
+status_one() {
+  local file="$1"
+  local expected="$2"
+  local pid
+  pid="$(read_pid "$file" 2>/dev/null || true)"
+  [ -n "$pid" ] && is_expected_process "$pid" "$expected"
+}
+
+# remove_socket 仅删除确认是 Socket 的残留路径，普通文件会导致失败。
+remove_socket() {
+  local socket="$1"
+  if [ -S "$socket" ]; then rm -f -- "$socket"; elif [ -e "$socket" ]; then return 1; fi
+}
+
+# rotate_log 仅在启动阶段轮换超过 5 MB 的日志，避免高频磁盘写入。
+rotate_log() {
+  local file="$1"
+  if [ -f "$file" ] && [ "$(wc -c < "$file")" -gt 5242880 ]; then
+    local index=4
+    while [ "$index" -ge 1 ]; do
+      if [ -f "$file.$index" ]; then mv -f -- "$file.$index" "$file.$((index + 1))"; fi
+      index=$((index - 1))
+    done
+    mv -f -- "$file" "$file.1"
+  fi
+}
+
+# start_app 先以包用户启动 Server，确认内部 Socket 后再启动特权 Collector。
+start_app() {
+  if status_one "$SERVER_PID_FILE" "$SERVER_BIN" && status_one "$COLLECTOR_PID_FILE" "$COLLECTOR_BIN"; then return 0; fi
+  prepare_dirs || fail "无法准备应用运行目录"
+  if [ ! -x "$SERVER_BIN" ] || [ ! -x "$COLLECTOR_BIN" ]; then fail "应用二进制缺失或不可执行"; fi
+  if status_one "$SERVER_PID_FILE" "$SERVER_BIN" || status_one "$COLLECTOR_PID_FILE" "$COLLECTOR_BIN"; then
+    stop_app || fail "无法停止不完整的旧进程"
+  fi
+  rm -f -- "$SERVER_PID_FILE" "$COLLECTOR_PID_FILE"
+  remove_socket "$GATEWAY_SOCKET" || fail "网关路径存在非 Socket 文件，已拒绝覆盖"
+  remove_socket "$COLLECTOR_SOCKET" || fail "Collector 路径存在非 Socket 文件，已拒绝覆盖"
+  rotate_log "$SERVER_LOG"
+  rotate_log "$COLLECTOR_LOG"
+  runuser -u "$TRIM_USERNAME" -- env \
+    TRIM_APPDEST="$TRIM_APPDEST" TRIM_PKGETC="$TRIM_PKGETC" TRIM_PKGVAR="$TRIM_PKGVAR" \
+    TRIM_PKGTMP="$TRIM_PKGTMP" TRIM_PKGHOME="$TRIM_PKGHOME" TRIM_SYS_VERSION="${TRIM_SYS_VERSION:-}" \
+    TRIM_KERNEL_VERSION="${TRIM_KERNEL_VERSION:-}" TRIM_RUN_USERNAME="$TRIM_USERNAME" \
+    "$SERVER_BIN" >> "$SERVER_LOG" 2>&1 &
+  echo "$!" > "$SERVER_PID_FILE"
+  local count=0
+  while [ ! -S "$COLLECTOR_SOCKET" ] && [ "$count" -lt 10 ]; do sleep 1; count=$((count + 1)); done
+  if ! status_one "$SERVER_PID_FILE" "$SERVER_BIN" || [ ! -S "$COLLECTOR_SOCKET" ]; then stop_app || true; fail "Server 启动失败，请查看应用日志"; fi
+  env TRIM_PKGETC="$TRIM_PKGETC" TRIM_PKGVAR="$TRIM_PKGVAR" "$COLLECTOR_BIN" >> "$COLLECTOR_LOG" 2>&1 &
+  echo "$!" > "$COLLECTOR_PID_FILE"
+  sleep 1
+  if ! status_one "$COLLECTOR_PID_FILE" "$COLLECTOR_BIN"; then stop_app || true; fail "Collector 启动失败，请查看应用日志"; fi
+}
+
+# stop_one 先发送 TERM 并有界等待，超时后才对已验证身份的进程发送 KILL。
+stop_one() {
+  local file="$1"
+  local expected="$2"
+  local pid
+  pid="$(read_pid "$file" 2>/dev/null || true)"
+  if [ -z "$pid" ]; then rm -f -- "$file"; return 0; fi
+  if ! is_expected_process "$pid" "$expected"; then rm -f -- "$file"; return 0; fi
+  kill -TERM "$pid" 2>/dev/null || true
+  local count=0
+  while is_expected_process "$pid" "$expected" && [ "$count" -lt 15 ]; do sleep 1; count=$((count + 1)); done
+  if is_expected_process "$pid" "$expected"; then kill -KILL "$pid" 2>/dev/null || return 1; fi
+  rm -f -- "$file"
+}
+
+# stop_app 先停 Collector 再停 Server，确保 SQLite 正常关闭后清理 Socket。
+stop_app() {
+  stop_one "$COLLECTOR_PID_FILE" "$COLLECTOR_BIN" || return 1
+  stop_one "$SERVER_PID_FILE" "$SERVER_BIN" || return 1
+  remove_socket "$COLLECTOR_SOCKET" || return 1
+  remove_socket "$GATEWAY_SOCKET" || return 1
+}
+
+case "${1:-}" in
+  start) start_app ;;
+  stop) stop_app || fail "应用停止失败" ;;
+  status)
+    if status_one "$SERVER_PID_FILE" "$SERVER_BIN" && status_one "$COLLECTOR_PID_FILE" "$COLLECTOR_BIN"; then exit 0; fi
+    exit 3
+    ;;
+  *) fail "未知生命周期命令: ${1:-空}" ;;
+esac

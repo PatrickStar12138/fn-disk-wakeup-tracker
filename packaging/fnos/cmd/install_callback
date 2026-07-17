@@ -1,0 +1,16 @@
+#!/bin/bash
+set -u
+mkdir -p "$TRIM_PKGETC" "$TRIM_PKGVAR/db" "$TRIM_PKGVAR/logs" "$TRIM_PKGVAR/run" "$TRIM_PKGTMP" "$TRIM_PKGHOME" || exit 1
+chown -R "$TRIM_USERNAME:$TRIM_GROUPNAME" "$TRIM_PKGETC" "$TRIM_PKGVAR" "$TRIM_PKGTMP" "$TRIM_PKGHOME" || exit 1
+chmod 0750 "$TRIM_PKGETC" "$TRIM_PKGVAR" "$TRIM_PKGVAR/db" "$TRIM_PKGVAR/logs" "$TRIM_PKGVAR/run" "$TRIM_PKGTMP" "$TRIM_PKGHOME" || exit 1
+if [ ! -f "$TRIM_PKGVAR/data-format" ]; then
+  printf 'schema=1\nappVersion=%s\n' "$TRIM_APPVER" > "$TRIM_PKGVAR/data-format" || exit 1
+  chown "$TRIM_USERNAME:$TRIM_GROUPNAME" "$TRIM_PKGVAR/data-format" || exit 1
+fi
+if [ -x "$TRIM_APPDEST/bin/fn-disk-wakeup-server" ]; then
+  if ! runuser -u "$TRIM_USERNAME" -- env TRIM_APPDEST="$TRIM_APPDEST" TRIM_PKGETC="$TRIM_PKGETC" TRIM_PKGVAR="$TRIM_PKGVAR" "$TRIM_APPDEST/bin/fn-disk-wakeup-server" --migrate-only; then
+    echo "初始化数据库失败，请检查应用数据目录权限" > "$TRIM_TEMP_LOGFILE"
+    exit 1
+  fi
+fi
+exit 0

@@ -1,0 +1,9 @@
+#!/bin/bash
+set -u
+BACKUP_DIR="$TRIM_TEMP_UPGRADE_FOLDER/fn-disk-wakeup-tracker-${TRIM_OLD_APPVER:-unknown}"
+mkdir -p "$BACKUP_DIR" || exit 1
+if [ -f "$TRIM_PKGVAR/db/tracker.db" ]; then cp -p "$TRIM_PKGVAR/db/tracker.db" "$BACKUP_DIR/tracker.db" || exit 1; fi
+if [ -f "$TRIM_PKGETC/settings.json" ]; then cp -p "$TRIM_PKGETC/settings.json" "$BACKUP_DIR/settings.json" || exit 1; fi
+printf 'from=%s\nto=%s\n' "${TRIM_OLD_APPVER:-unknown}" "$TRIM_APPVER" > "$BACKUP_DIR/upgrade.info" || exit 1
+exit 0
+

@@ -1,0 +1,5 @@
+#!/bin/bash
+set -u
+if [ -z "${TRIM_PKGETC:-}" ]; then echo "配置目录缺失" > "$TRIM_TEMP_LOGFILE"; exit 1; fi
+exit 0
+

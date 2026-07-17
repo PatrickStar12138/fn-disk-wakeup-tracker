@@ -1,0 +1,8 @@
+#!/bin/bash
+set -u
+if [ -z "${TRIM_APPDEST:-}" ] || [ -z "${TRIM_PKGETC:-}" ] || [ -z "${TRIM_PKGVAR:-}" ]; then
+  echo "安装目录环境变量缺失" > "${TRIM_TEMP_LOGFILE:-/dev/stderr}"
+  exit 1
+fi
+exit 0
+

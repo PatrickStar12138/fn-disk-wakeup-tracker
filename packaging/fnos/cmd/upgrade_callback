@@ -1,0 +1,12 @@
+#!/bin/bash
+set -u
+LOG_FILE="$TRIM_PKGVAR/logs/upgrade.log"
+mkdir -p "$TRIM_PKGVAR/logs" || exit 1
+if ! runuser -u "$TRIM_USERNAME" -- env TRIM_APPDEST="$TRIM_APPDEST" TRIM_PKGETC="$TRIM_PKGETC" TRIM_PKGVAR="$TRIM_PKGVAR" "$TRIM_APPDEST/bin/fn-disk-wakeup-server" --migrate-only >> "$LOG_FILE" 2>&1; then
+  echo "数据库迁移失败，原始备份保留在升级临时目录" > "$TRIM_TEMP_LOGFILE"
+  exit 1
+fi
+printf 'schema=1\nappVersion=%s\n' "$TRIM_APPVER" > "$TRIM_PKGVAR/data-format" || exit 1
+chown "$TRIM_USERNAME:$TRIM_GROUPNAME" "$TRIM_PKGVAR/data-format" "$LOG_FILE" || exit 1
+exit 0
+

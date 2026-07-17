@@ -1,0 +1,12 @@
+#!/bin/bash
+set -u
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [ -x "$SCRIPT_DIR/main" ]; then "$SCRIPT_DIR/main" stop || true; fi
+case "${wizard_uninstall_data:-keep}" in
+  keep)
+    printf 'schema=1\nappVersion=%s\nretainedAt=%s\n' "$TRIM_APPVER" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" > "$TRIM_PKGVAR/data-format" || exit 1
+    ;;
+  delete) ;;
+  *) echo "卸载数据选项无效" > "$TRIM_TEMP_LOGFILE"; exit 1 ;;
+esac
+exit 0

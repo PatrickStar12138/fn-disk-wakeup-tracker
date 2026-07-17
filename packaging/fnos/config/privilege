@@ -1,0 +1,8 @@
+{
+  "defaults": {
+    "run-as": "root"
+  },
+  "username": "fn_disk_wakeup",
+  "groupname": "fn_disk_wakeup"
+}
+

@@ -1,0 +1,35 @@
+#!/bin/bash
+set -u
+
+# validate_owned_path 拒绝空值、系统根路径、卷挂载点和非本应用末级目录。
+validate_owned_path() {
+  local value="$1"
+  if [ -z "$value" ] || [ -z "${TRIM_APPNAME:-}" ]; then return 1; fi
+  case "$value" in /*) ;; *) return 1 ;; esac
+  case "$value" in *"/../"*|*/..|*"/./"*|/|/var|/var/|/home|/home/|/Volumes|/Volumes/) return 1 ;; esac
+  if [[ "$value" =~ ^/vol[^/]*/?$ ]]; then return 1; fi
+  local parent base normalized
+  parent="$(cd "$(dirname "$value")" 2>/dev/null && pwd -P)" || return 1
+  base="$(basename "$value")"
+  normalized="$parent/$base"
+  if [ "${value%/}" != "$normalized" ]; then return 1; fi
+  [ "$base" = "$TRIM_APPNAME" ]
+}
+
+# delete_contents 仅在路径通过归属校验后删除本应用目录内的直接子项。
+delete_contents() {
+  local value="$1"
+  validate_owned_path "$value" || return 1
+  if [ -d "$value" ]; then find "$value" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +; fi
+}
+
+case "${wizard_uninstall_data:-keep}" in
+  keep) exit 0 ;;
+  delete)
+    for path in "$TRIM_PKGETC" "$TRIM_PKGVAR" "$TRIM_PKGTMP" "$TRIM_PKGHOME"; do
+      if ! delete_contents "$path"; then echo "拒绝删除未经验证的路径" > "$TRIM_TEMP_LOGFILE"; exit 1; fi
+    done
+    ;;
+  *) echo "卸载数据选项无效" > "$TRIM_TEMP_LOGFILE"; exit 1 ;;
+esac
+exit 0
