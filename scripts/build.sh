@@ -62,7 +62,7 @@ case "$TARGET" in
   all) build_arch x86 amd64; build_arch arm arm64 ;;
 esac
 
-(cd "$OUT_DIR" && shasum -a 256 ./*.fpk > SHA256SUMS) || exit 1
+(cd "$OUT_DIR" && LC_ALL=C LANG=C shasum -a 256 ./*.fpk > SHA256SUMS) || exit 1
 echo "-- 构建摘要"
 ls -lh "$OUT_DIR"
 echo "输出目录: $OUT_DIR"
