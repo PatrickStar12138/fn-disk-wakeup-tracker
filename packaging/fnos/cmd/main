@@ -10,16 +10,29 @@ SERVER_PID_FILE="${RUN_DIR}/server.pid"
 COLLECTOR_PID_FILE="${RUN_DIR}/collector.pid"
 SERVER_LOG="${LOG_DIR}/server.log"
 COLLECTOR_LOG="${LOG_DIR}/collector.log"
+LIFECYCLE_LOG="${LOG_DIR}/lifecycle.log"
 GATEWAY_SOCKET="${TRIM_APPDEST}/app.sock"
 COLLECTOR_SOCKET="${RUN_DIR}/collector.sock"
+PROC_ROOT="${FN_DISK_PROC_ROOT:-/proc}"
+RUNUSER_BIN="${FN_DISK_RUNUSER_BIN:-runuser}"
+STARTUP_TIMEOUT_SECONDS="${FN_DISK_STARTUP_TIMEOUT_SECONDS:-10}"
+
+# log_error 将生命周期错误追加到应用日志，并同步写入 fnOS 用户可见临时日志。
+log_error() {
+  local message="$1"
+  if [ -n "${TRIM_TEMP_LOGFILE:-}" ]; then
+    printf '%s\n' "$message" > "$TRIM_TEMP_LOGFILE"
+  fi
+  if [ -d "$LOG_DIR" ]; then
+    printf '%s level=error module=lifecycle message=%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$message" >> "$LIFECYCLE_LOG"
+  fi
+  printf '%s\n' "$message" >&2
+}
 
 # fail 将生命周期错误同时写入官方用户可见日志并退出。
 fail() {
   local message="$1"
-  if [ -n "${TRIM_TEMP_LOGFILE:-}" ]; then
-    echo "$message" > "${TRIM_TEMP_LOGFILE}"
-  fi
-  echo "$message" >&2
+  log_error "$message"
   exit 1
 }
 
@@ -47,10 +60,12 @@ is_expected_process() {
   local pid="$1"
   local expected="$2"
   if ! kill -0 "$pid" 2>/dev/null; then return 1; fi
-  if [ ! -e "/proc/$pid/exe" ]; then return 1; fi
+  if [ ! -e "$PROC_ROOT/$pid/exe" ]; then return 1; fi
   local actual
-  actual="$(readlink -f "/proc/$pid/exe" 2>/dev/null || true)"
-  [ "$actual" = "$expected" ]
+  local canonical_expected
+  actual="$(readlink "$PROC_ROOT/$pid/exe" 2>/dev/null || true)"
+  canonical_expected="$(readlink -f "$expected" 2>/dev/null || realpath "$expected" 2>/dev/null || true)"
+  [ -n "$canonical_expected" ] && [ "$actual" = "$canonical_expected" ]
 }
 
 # status_one 校验 PID 文件和实际进程身份是否同时有效。
@@ -68,6 +83,80 @@ remove_socket() {
   if [ -S "$socket" ]; then rm -f -- "$socket"; elif [ -e "$socket" ]; then return 1; fi
 }
 
+# valid_startup_timeout 校验启动等待时间，避免错误环境变量造成无限等待或过长阻塞。
+valid_startup_timeout() {
+  case "$STARTUP_TIMEOUT_SECONDS" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$STARTUP_TIMEOUT_SECONDS" -ge 1 ] && [ "$STARTUP_TIMEOUT_SECONDS" -le 60 ]
+}
+
+# launch_server 让降权 Shell 先记录自己的 PID，再以 exec 替换为 Server，确保 PID 始终不变。
+launch_server() {
+  "$RUNUSER_BIN" -u "$TRIM_USERNAME" -- env \
+    TRIM_APPDEST="$TRIM_APPDEST" TRIM_PKGETC="$TRIM_PKGETC" TRIM_PKGVAR="$TRIM_PKGVAR" \
+    TRIM_PKGTMP="$TRIM_PKGTMP" TRIM_PKGHOME="$TRIM_PKGHOME" TRIM_SYS_VERSION="${TRIM_SYS_VERSION:-}" \
+    TRIM_KERNEL_VERSION="${TRIM_KERNEL_VERSION:-}" TRIM_RUN_USERNAME="$TRIM_USERNAME" \
+    /bin/bash -c 'umask 027; printf "%s\n" "$$" > "$1" || exit 70; exec "$2"' \
+    fn-disk-server-launcher "$SERVER_PID_FILE" "$SERVER_BIN" >> "$SERVER_LOG" 2>&1 &
+}
+
+# launch_collector 由特权 Shell 记录 PID 后 exec Collector，避免保存中间包装进程 PID。
+launch_collector() {
+  env TRIM_PKGETC="$TRIM_PKGETC" TRIM_PKGVAR="$TRIM_PKGVAR" \
+    /bin/bash -c 'umask 027; printf "%s\n" "$$" > "$1" || exit 70; exec "$2"' \
+    fn-disk-collector-launcher "$COLLECTOR_PID_FILE" "$COLLECTOR_BIN" >> "$COLLECTOR_LOG" 2>&1 &
+}
+
+# process_start_error 根据 PID 文件、存活状态和可执行文件身份返回具体启动错误。
+process_start_error() {
+  local role="$1"
+  local file="$2"
+  local expected="$3"
+  local pid
+  if [ ! -f "$file" ]; then printf '%s 进程启动失败：PID 文件未产生' "$role"; return; fi
+  pid="$(read_pid "$file" 2>/dev/null || true)"
+  if [ -z "$pid" ]; then printf '%s PID 文件无效' "$role"; return; fi
+  if ! kill -0 "$pid" 2>/dev/null; then printf '%s 进程启动失败：PID %s 已退出' "$role" "$pid"; return; fi
+  printf '%s 进程身份不匹配：PID %s 不是预期二进制' "$role" "$pid"
+}
+
+# wait_process_ready 有界等待 PID 文件指向已 exec 完成的真实程序，而不是 runuser 或 Shell。
+wait_process_ready() {
+  local role="$1"
+  local file="$2"
+  local expected="$3"
+  local count=0
+  while [ "$count" -lt "$STARTUP_TIMEOUT_SECONDS" ]; do
+    if status_one "$file" "$expected"; then return 0; fi
+    sleep 1
+    count=$((count + 1))
+  done
+  return 1
+}
+
+# wait_socket_ready 有界等待指定进程创建 Unix Socket，并持续确认进程没有提前退出。
+wait_socket_ready() {
+  local socket="$1"
+  local file="$2"
+  local expected="$3"
+  local count=0
+  while [ "$count" -lt "$STARTUP_TIMEOUT_SECONDS" ]; do
+    if [ -S "$socket" ]; then return 0; fi
+    if ! status_one "$file" "$expected"; then return 2; fi
+    sleep 1
+    count=$((count + 1))
+  done
+  return 1
+}
+
+# abort_start 回滚本轮已启动的真实进程和 Socket，再保留原始阶段错误退出。
+abort_start() {
+  local message="$1"
+  if ! stop_app; then
+    message="$message；启动回滚未能完整清理，请检查应用日志"
+  fi
+  fail "$message"
+}
+
 # rotate_log 仅在启动阶段轮换超过 5 MB 的日志，避免高频磁盘写入。
 rotate_log() {
   local file="$1"
@@ -81,9 +170,10 @@ rotate_log() {
   fi
 }
 
-# start_app 先以包用户启动 Server，确认内部 Socket 后再启动特权 Collector。
+# start_app 先验证 Server 创建的两个 Socket，再启动特权 Collector；任一阶段失败都会完整回滚。
 start_app() {
-  if status_one "$SERVER_PID_FILE" "$SERVER_BIN" && status_one "$COLLECTOR_PID_FILE" "$COLLECTOR_BIN"; then return 0; fi
+  valid_startup_timeout || fail "启动等待时间无效，必须为 1 到 60 秒整数"
+  if status_one "$SERVER_PID_FILE" "$SERVER_BIN" && status_one "$COLLECTOR_PID_FILE" "$COLLECTOR_BIN" && [ -S "$GATEWAY_SOCKET" ] && [ -S "$COLLECTOR_SOCKET" ]; then return 0; fi
   prepare_dirs || fail "无法准备应用运行目录"
   if [ ! -x "$SERVER_BIN" ] || [ ! -x "$COLLECTOR_BIN" ]; then fail "应用二进制缺失或不可执行"; fi
   if status_one "$SERVER_PID_FILE" "$SERVER_BIN" || status_one "$COLLECTOR_PID_FILE" "$COLLECTOR_BIN"; then
@@ -94,19 +184,26 @@ start_app() {
   remove_socket "$COLLECTOR_SOCKET" || fail "Collector 路径存在非 Socket 文件，已拒绝覆盖"
   rotate_log "$SERVER_LOG"
   rotate_log "$COLLECTOR_LOG"
-  runuser -u "$TRIM_USERNAME" -- env \
-    TRIM_APPDEST="$TRIM_APPDEST" TRIM_PKGETC="$TRIM_PKGETC" TRIM_PKGVAR="$TRIM_PKGVAR" \
-    TRIM_PKGTMP="$TRIM_PKGTMP" TRIM_PKGHOME="$TRIM_PKGHOME" TRIM_SYS_VERSION="${TRIM_SYS_VERSION:-}" \
-    TRIM_KERNEL_VERSION="${TRIM_KERNEL_VERSION:-}" TRIM_RUN_USERNAME="$TRIM_USERNAME" \
-    "$SERVER_BIN" >> "$SERVER_LOG" 2>&1 &
-  echo "$!" > "$SERVER_PID_FILE"
-  local count=0
-  while [ ! -S "$COLLECTOR_SOCKET" ] && [ "$count" -lt 10 ]; do sleep 1; count=$((count + 1)); done
-  if ! status_one "$SERVER_PID_FILE" "$SERVER_BIN" || [ ! -S "$COLLECTOR_SOCKET" ]; then stop_app || true; fail "Server 启动失败，请查看应用日志"; fi
-  env TRIM_PKGETC="$TRIM_PKGETC" TRIM_PKGVAR="$TRIM_PKGVAR" "$COLLECTOR_BIN" >> "$COLLECTOR_LOG" 2>&1 &
-  echo "$!" > "$COLLECTOR_PID_FILE"
-  sleep 1
-  if ! status_one "$COLLECTOR_PID_FILE" "$COLLECTOR_BIN"; then stop_app || true; fail "Collector 启动失败，请查看应用日志"; fi
+  launch_server
+  if ! wait_process_ready "Server" "$SERVER_PID_FILE" "$SERVER_BIN"; then
+    abort_start "$(process_start_error "Server" "$SERVER_PID_FILE" "$SERVER_BIN")"
+  fi
+  wait_socket_ready "$GATEWAY_SOCKET" "$SERVER_PID_FILE" "$SERVER_BIN"
+  case "$?" in
+    0) ;;
+    1) abort_start "Server 网关 Socket 创建超时" ;;
+    2) abort_start "Server 进程启动失败：等待网关 Socket 时进程退出或身份变化" ;;
+  esac
+  wait_socket_ready "$COLLECTOR_SOCKET" "$SERVER_PID_FILE" "$SERVER_BIN"
+  case "$?" in
+    0) ;;
+    1) abort_start "内部 Socket 创建超时" ;;
+    2) abort_start "Server 进程启动失败：等待内部 Socket 时进程退出或身份变化" ;;
+  esac
+  launch_collector
+  if ! wait_process_ready "Collector" "$COLLECTOR_PID_FILE" "$COLLECTOR_BIN"; then
+    abort_start "$(process_start_error "Collector" "$COLLECTOR_PID_FILE" "$COLLECTOR_BIN")"
+  fi
 }
 
 # stop_one 先发送 TERM 并有界等待，超时后才对已验证身份的进程发送 KILL。
@@ -120,7 +217,13 @@ stop_one() {
   kill -TERM "$pid" 2>/dev/null || true
   local count=0
   while is_expected_process "$pid" "$expected" && [ "$count" -lt 15 ]; do sleep 1; count=$((count + 1)); done
-  if is_expected_process "$pid" "$expected"; then kill -KILL "$pid" 2>/dev/null || return 1; fi
+  if is_expected_process "$pid" "$expected"; then
+    # 仅在 TERM 超时且身份再次核验成功后发送 KILL，避免 PID 复用时误杀其他进程。
+    kill -KILL "$pid" 2>/dev/null || return 1
+    count=0
+    while kill -0 "$pid" 2>/dev/null && [ "$count" -lt 5 ]; do sleep 1; count=$((count + 1)); done
+    if is_expected_process "$pid" "$expected"; then return 1; fi
+  fi
   rm -f -- "$file"
 }
 

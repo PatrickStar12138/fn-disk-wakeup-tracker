@@ -25,7 +25,7 @@ cp "$BIN_DIR/fn-disk-wakeup-server" "$STAGE/app/bin/"
 cp "$BIN_DIR/fn-disk-wakeup-collector" "$STAGE/app/bin/"
 cp -R "$ROOT/web/dist/." "$STAGE/app/web/"
 sed -e "s/@VERSION@/$VERSION/g" -e "s/@PLATFORM@/$PLATFORM/g" "$ROOT/packaging/fnos/manifest" > "$STAGE/manifest"
-chmod 0755 "$STAGE"/cmd/* "$STAGE/app/bin/"*
+"$ROOT/scripts/set-package-permissions.sh" "$STAGE" || exit 1
 
 "$ROOT/scripts/test-package.sh" "$STAGE" "$PLATFORM" "$VERSION" || exit 1
 FNPACK="${FNPACK_BIN:-}"

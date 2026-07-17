@@ -40,6 +40,10 @@ echo "-- Go 单元测试与 vet"
 UNFORMATTED="$(gofmt -l "$ROOT/cmd" "$ROOT/internal")"
 if [ -n "$UNFORMATTED" ]; then echo "错误：以下 Go 文件未格式化：" >&2; echo "$UNFORMATTED" >&2; exit 1; fi
 (cd "$ROOT" && go test ./... && go vet ./...) || exit 1
+echo "-- Shell 语法与生命周期回归测试"
+for script in "$ROOT"/packaging/fnos/cmd/* "$ROOT"/scripts/*.sh "$ROOT"/tests/*.sh; do bash -n "$script" || exit 1; done
+bash "$ROOT/tests/lifecycle_test.sh" || exit 1
+bash "$ROOT/tests/package_permissions_test.sh" || exit 1
 
 mkdir -p "$BUILD_ROOT/bin" "$BUILD_ROOT/staging" "$OUT_DIR"
 

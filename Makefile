@@ -7,6 +7,9 @@ test:
 	./scripts/check-comments.sh
 	go test ./...
 	cd web && npm test -- --run
+	for script in packaging/fnos/cmd/* scripts/*.sh tests/*.sh; do bash -n "$$script"; done
+	bash tests/lifecycle_test.sh
+	bash tests/package_permissions_test.sh
 
 release:
 	./scripts/build.sh all

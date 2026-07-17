@@ -1,0 +1,13 @@
+#!/bin/bash
+set -u
+
+if [ "${1:-}" != "-u" ] || [ "$#" -lt 4 ]; then exit 64; fi
+shift 2
+if [ "${1:-}" != "--" ]; then exit 64; fi
+shift
+if [ -n "${FN_DISK_TEST_RUNUSER_PID_FILE:-}" ]; then printf '%s\n' "$$" > "$FN_DISK_TEST_RUNUSER_PID_FILE"; fi
+
+# 测试替身保留独立包装进程并等待子进程，用于证明 PID 文件不能记录 runuser 自身 PID。
+"$@" &
+child_pid=$!
+wait "$child_pid"
