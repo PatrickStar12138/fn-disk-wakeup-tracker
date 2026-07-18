@@ -5,7 +5,7 @@ import AppHeader from './components/AppHeader.vue'
 import AppSidebar from './components/AppSidebar.vue'
 import ErrorState from './components/ErrorState.vue'
 import LoadingSkeleton from './components/LoadingSkeleton.vue'
-import StatusFooter from './components/StatusFooter.vue'
+import GlobalStatusBar from './components/GlobalStatusBar.vue'
 import ToastMessage from './components/ToastMessage.vue'
 import AboutPage from './pages/AboutPage.vue'
 import DiagnosticsPage from './pages/DiagnosticsPage.vue'
@@ -252,22 +252,24 @@ onBeforeUnmount(closeAppResources)
 
 <template>
   <div class="app-shell">
-    <AppSidebar :items="navigation" :current="current" :open="menuOpen" :icon-url="icon64" :collector-healthy="overview?.collectorHealthy" :version="version.version" @navigate="selectPage" @close="menuOpen = false" />
+    <AppSidebar :items="navigation" :current="current" :open="menuOpen" :icon-url="icon64" :version="version.version" @navigate="selectPage" @close="menuOpen = false" />
     <main class="app-main">
-      <AppHeader :title="pageTitle" :subtitle="subtitles[current]" :updated-at="overview?.lastRefreshAt" :refreshing="refreshing" @refresh="refresh" @menu="menuOpen = !menuOpen" />
-      <ToastMessage :visible="toast.visible" :message="toast.message" :kind="toast.kind" />
-      <div class="page-content">
-        <ErrorState v-if="error" :message="error" @retry="retryCurrent" />
-        <LoadingSkeleton v-else-if="loading" />
-        <OverviewPage v-else-if="current === 'overview'" :overview="overview" :disks="disks" :events="events" @navigate="selectPage" />
-        <DisksPage v-else-if="current === 'disks'" :disks="disks" />
-        <EventsPage v-else-if="current === 'events'" :events="events" :disks="disks" :filters="filters" :page="eventPage" :page-size="pageSize" :total="eventTotal" :loading="eventsLoading" :export-url="eventExportURL" @filters="applyEventFilters" @reload="reloadEvents" @page="changeEventPage" />
-        <SourcesPage v-else-if="current === 'sources'" :rows="sourceRows" :filters="filters" />
-        <DiagnosticsPage v-else-if="current === 'diagnostics'" :report="diagnostics" @notify="handlePageNotification" />
-        <SettingsPage v-else-if="current === 'settings' && settings" :settings="settings" :saving="saving" @save="saveSettings" />
-        <AboutPage v-else-if="current === 'about'" :version="version" :icon-url="icon256" />
+      <div class="main-scroll">
+        <AppHeader :title="pageTitle" :subtitle="subtitles[current]" :updated-at="overview?.lastRefreshAt" :refreshing="refreshing" @refresh="refresh" @menu="menuOpen = !menuOpen" />
+        <ToastMessage :visible="toast.visible" :message="toast.message" :kind="toast.kind" />
+        <div class="page-content">
+          <ErrorState v-if="error" :message="error" @retry="retryCurrent" />
+          <LoadingSkeleton v-else-if="loading" />
+          <OverviewPage v-else-if="current === 'overview'" :overview="overview" :disks="disks" :events="events" @navigate="selectPage" />
+          <DisksPage v-else-if="current === 'disks'" :disks="disks" />
+          <EventsPage v-else-if="current === 'events'" :events="events" :disks="disks" :filters="filters" :page="eventPage" :page-size="pageSize" :total="eventTotal" :loading="eventsLoading" :export-url="eventExportURL" @filters="applyEventFilters" @reload="reloadEvents" @page="changeEventPage" />
+          <SourcesPage v-else-if="current === 'sources'" :rows="sourceRows" :filters="filters" />
+          <DiagnosticsPage v-else-if="current === 'diagnostics'" :report="diagnostics" @notify="handlePageNotification" />
+          <SettingsPage v-else-if="current === 'settings' && settings" :settings="settings" :saving="saving" @save="saveSettings" />
+          <AboutPage v-else-if="current === 'about'" :version="version" :icon-url="icon256" />
+        </div>
       </div>
-      <StatusFooter :collector-healthy="overview?.collectorHealthy" :database-status="overview?.databaseStatus" :last-refresh-at="overview?.lastRefreshAt" />
+      <GlobalStatusBar :collector-healthy="overview?.collectorHealthy" :database-status="overview?.databaseStatus" :last-refresh-at="overview?.lastRefreshAt" />
     </main>
   </div>
 </template>
