@@ -40,6 +40,8 @@ const diagnostics = {
   availableCommands: { hdparm: true, smartctl: false }, versionConsistent: true,
 }
 
+const baseOverview = { mechanicalDisks: 1, activeDisks: 0, standbyDisks: 0, unknownDisks: 1, todayWakeups: 0, suspectedSource: '', collectorHealthy: true, databaseStatus: '正常', lastRefreshAt: '2026-07-18T08:00:00Z' }
+
 /** response 构造不访问网络的最小 Fetch 响应，并允许测试显式模拟错误状态。 */
 function response(body: unknown, ok = true): Promise<Response> {
   return Promise.resolve({ ok, status: ok ? 200 : 500, json: () => Promise.resolve(body) } as Response)
@@ -48,7 +50,7 @@ function response(body: unknown, ok = true): Promise<Response> {
 /** baseFetch 按现有 API 路径返回可重复的真实形状夹具，不包含参考图演示数据。 */
 function baseFetch(url: string | URL | Request, init?: RequestInit): Promise<Response> {
   const target = String(url)
-  if (target.endsWith('/overview')) return response({ mechanicalDisks: 1, activeDisks: 0, standbyDisks: 0, unknownDisks: 1, todayWakeups: 0, suspectedSource: '', collectorHealthy: true, databaseStatus: '正常', lastRefreshAt: '2026-07-18T08:00:00Z' })
+  if (target.endsWith('/overview')) return response(baseOverview)
   if (target.endsWith('/disks')) return response({ items: disks })
   if (target.includes('/events')) return response({ items: [], page: 1, pageSize: 20, total: 0 })
   if (target.endsWith('/version')) return response({ version: '0.1.0', commit: 'abc123', buildTime: '2026-07-18T07:00:00Z', platform: 'x86' })
@@ -56,6 +58,11 @@ function baseFetch(url: string | URL | Request, init?: RequestInit): Promise<Res
   if (target.endsWith('/diagnostics')) return response(diagnostics)
   if (target.endsWith('/refresh')) return response({ ok: true })
   return response({})
+}
+
+/** fetchWithOverview 只替换总览状态夹具，其余 API 保持真实响应形状，便于验证保守降级文案。 */
+function fetchWithOverview(overview: Record<string, unknown>): (url: string | URL | Request, init?: RequestInit) => Promise<Response> {
+  return (url, init) => String(url).endsWith('/overview') ? response(overview) : baseFetch(url, init)
 }
 
 /** mountApp 挂载控制台并等待首次并行请求结束，供交互测试复用。 */
@@ -96,6 +103,108 @@ describe('App', () => {
       await navigate(wrapper, label)
       expect(wrapper.get('.app-header h1').text()).toBe(label)
     }
+  })
+
+  // 测试侧栏去重：左侧导航底部不再包含 Collector 或数据库运行状态，防止与全局栏重复。
+  it('侧栏底部不再显示重复运行状态', async () => {
+    const wrapper = await mountApp()
+    const sidebar = wrapper.get('.app-sidebar')
+    expect(sidebar.find('.sidebar-status').exists()).toBe(false)
+    expect(sidebar.text()).not.toContain('采集服务正常')
+    expect(sidebar.text()).not.toContain('数据库正常')
+  })
+
+  // 测试真实版本：侧栏精简区域应展示版本接口返回值，不使用写死版本。
+  it('侧栏仍显示真实版本号', async () => {
+    const wrapper = await mountApp()
+    expect(wrapper.get('.sidebar-version').text()).toBe('v0.1.0')
+  })
+
+  // 测试唯一实例：公共布局中只能渲染一个全局状态栏，避免页面重复挂载。
+  it('全局状态栏只渲染一次', async () => {
+    const wrapper = await mountApp()
+    expect(wrapper.findAll('.global-status-bar')).toHaveLength(1)
+  })
+
+  // 测试布局归属：全局状态栏必须是 app-main 的直接末尾布局行，不得位于页面滚动内容中。
+  it('全局状态栏位于公共布局且独立于滚动内容', async () => {
+    const wrapper = await mountApp()
+    const main = wrapper.get('.app-main').element
+    expect(main.lastElementChild?.classList.contains('global-status-bar')).toBe(true)
+    expect(wrapper.get('.main-scroll').find('.global-status-bar').exists()).toBe(false)
+  })
+
+  // 测试跨页持久性：切换七个功能页面后唯一状态栏仍存在，不由页面组件控制生命周期。
+  it('七个页面切换后全局状态栏持续存在', async () => {
+    const wrapper = await mountApp()
+    for (const label of ['总览', '硬盘', '唤醒事件', '疑似来源', '诊断', '设置', '关于']) {
+      await navigate(wrapper, label)
+      expect(wrapper.findAll('.global-status-bar')).toHaveLength(1)
+    }
+  })
+
+  // 测试 Collector 正常：只有后端明确返回 true 时才展示正常文字和成功语义色。
+  it('Collector 正常时显示采集服务正常', async () => {
+    const wrapper = await mountApp()
+    const item = wrapper.get('[data-status-item="collector"]')
+    expect(item.text()).toContain('采集服务正常')
+    expect(item.classes()).toContain('tone-success')
+  })
+
+  // 测试 Collector 离线：后端返回 false 时必须显示离线和危险语义，不能沿用绿色正常。
+  it('Collector 离线时不显示绿色正常', async () => {
+    vi.stubGlobal('fetch', vi.fn(fetchWithOverview({ ...baseOverview, collectorHealthy: false })))
+    const wrapper = await mountApp()
+    const item = wrapper.get('[data-status-item="collector"]')
+    expect(item.text()).toContain('采集服务离线')
+    expect(item.text()).not.toContain('采集服务正常')
+    expect(item.classes()).toContain('tone-danger')
+  })
+
+  // 测试首次采集：Collector 已上线但没有真实刷新时间时应显示等待，不能宣称已经收到数据。
+  it('尚未收到数据时显示等待首次采集', async () => {
+    vi.stubGlobal('fetch', vi.fn(fetchWithOverview({ ...baseOverview, lastRefreshAt: undefined })))
+    const wrapper = await mountApp()
+    const item = wrapper.get('[data-status-item="reception"]')
+    expect(item.text()).toContain('等待首次采集')
+    expect(item.text()).not.toContain('已接收采集数据')
+  })
+
+  // 测试数据中断：已有真实刷新时间但 Collector 离线时应明确显示采集数据中断。
+  it('Collector 离线且已有数据时显示数据中断', async () => {
+    vi.stubGlobal('fetch', vi.fn(fetchWithOverview({ ...baseOverview, collectorHealthy: false })))
+    const wrapper = await mountApp()
+    expect(wrapper.get('[data-status-item="reception"]').text()).toContain('采集数据已中断')
+  })
+
+  // 测试数据库异常：任何非健康且非空的后端状态都应保守显示异常和危险语义。
+  it('数据库异常时显示明确错误状态', async () => {
+    vi.stubGlobal('fetch', vi.fn(fetchWithOverview({ ...baseOverview, databaseStatus: '只读' })))
+    const wrapper = await mountApp()
+    const item = wrapper.get('[data-status-item="database"]')
+    expect(item.text()).toContain('数据库异常')
+    expect(item.classes()).toContain('tone-danger')
+  })
+
+  // 测试状态未知：缺少 Collector、刷新时间和数据库状态时全部采用未知文案，不伪装正常。
+  it('状态缺失时不伪装为正常', async () => {
+    vi.stubGlobal('fetch', vi.fn(fetchWithOverview({ ...baseOverview, collectorHealthy: undefined, databaseStatus: '', lastRefreshAt: undefined })))
+    const wrapper = await mountApp()
+    const footer = wrapper.get('.global-status-bar')
+    expect(footer.text()).toContain('采集状态未知')
+    expect(footer.text()).toContain('数据状态未知')
+    expect(footer.text()).toContain('数据库状态未知')
+    expect(footer.findAll('.tone-success')).toHaveLength(0)
+  })
+
+  // 测试长期组件：推进 Toast 自动消失时间后，作为布局行的全局状态栏仍必须存在。
+  it('全局状态栏不会像 Toast 一样自动消失', async () => {
+    vi.useFakeTimers()
+    const wrapper = mount(App)
+    await flushPromises()
+    vi.advanceTimersByTime(10_000)
+    await flushPromises()
+    expect(wrapper.findAll('.global-status-bar')).toHaveLength(1)
   })
 
   // 测试未知磁盘：后端返回 unknown 时必须展示“未知”，不得降级成待机。
@@ -215,14 +324,18 @@ describe('App', () => {
     expect(wrapper.text()).toContain('x86')
   })
 
-  // 测试窄窗口导航：768px 下仍应存在带可访问名称的抽屉按钮。
-  it('768px 下保留可操作导航按钮', async () => {
+  // 测试窄窗口布局：768px 下应同时保留可操作抽屉按钮和完整的唯一全局状态栏。
+  it('768px 下保留导航按钮和全局状态栏', async () => {
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 768 })
     const wrapper = await mountApp()
     const menu = wrapper.get('[aria-label="打开导航"]')
     expect(menu.attributes('aria-label')).toBe('打开导航')
     await menu.trigger('click')
     expect(wrapper.get('.app-sidebar').classes()).toContain('open')
+    expect(wrapper.findAll('.global-status-bar')).toHaveLength(1)
+    expect(wrapper.get('.global-status-bar').text()).toContain('采集服务正常')
+    expect(wrapper.get('.global-status-bar').text()).toContain('已接收采集数据')
+    expect(wrapper.get('.global-status-bar').text()).toContain('数据库正常')
   })
 
   // 测试参考图隔离：所有页面不得出现参考图中的演示来源和应用名称。
